@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator
 
 ROOT = Path(__file__).resolve().parent
-app = FastAPI(title="ETF Backtester", version="1.0.0")
+app = FastAPI(title="ETF Backtester", version="1.1.0")
 app.mount("/static", StaticFiles(directory=ROOT / "static"), name="static")
 
 SUPPORTED_ETFS = ["VOO", "QQQ", "QLD", "SCHD", "SPY", "VTI", "IWM", "BND"]
@@ -63,6 +63,36 @@ def load_prices(ticker: str, start: date, end: date) -> pd.Series:
         raise ValueError(f"{ticker} 데이터를 조회하지 못했습니다: {exc}") from exc
 
 
+def xnpv(rate: float, cashflows: list[tuple[pd.Timestamp, float]]) -> float:
+    origin = cashflows[0][0]
+    return sum(amount / (1 + rate) ** (((when - origin).days) / 365.25) for when, amount in cashflows)
+
+
+def xirr(cashflows: list[tuple[pd.Timestamp, float]]) -> float:
+    """Annualized money-weighted return for dated external cash flows."""
+    if not any(amount < 0 for _, amount in cashflows) or not any(amount > 0 for _, amount in cashflows):
+        return 0.0
+    low, high = -0.999999, 10.0
+    low_value, high_value = xnpv(low, cashflows), xnpv(high, cashflows)
+    for _ in range(100):
+        if low_value * high_value <= 0:
+            break
+        high *= 2
+        high_value = xnpv(high, cashflows)
+    else:
+        return 0.0
+    for _ in range(100):
+        mid = (low + high) / 2
+        value = xnpv(mid, cashflows)
+        if abs(value) < 1e-8:
+            return mid
+        if low_value * value <= 0:
+            high, high_value = mid, value
+        else:
+            low, low_value = mid, value
+    return (low + high) / 2
+
+
 def simulate(ticker: str, prices: pd.Series, initial: float, monthly: float) -> dict:
     start, end = prices.index[0], prices.index[-1]
     contribution_dates = [start]
@@ -80,18 +110,29 @@ def simulate(ticker: str, prices: pd.Series, initial: float, monthly: float) -> 
     shares = (contributions / prices).cumsum()
     values = shares * prices
     invested = contributions.cumsum()
-    peak = values.cummax()
-    drawdown = values / peak - 1
+    # Remove external deposits from each period's return before calculating MDD.
+    adjusted_values = pd.Series(index=prices.index, dtype=float)
+    adjusted_values.iloc[0] = values.iloc[0]
+    for index in range(1, len(values)):
+        prior_value = values.iloc[index - 1]
+        contribution = contributions.iloc[index]
+        adjusted_values.iloc[index] = adjusted_values.iloc[index - 1] * values.iloc[index] / max(prior_value + contribution, 1e-12)
+    peak = adjusted_values.cummax()
+    drawdown = adjusted_values / peak - 1
     total_invested = float(invested.iloc[-1])
     final_value = float(values.iloc[-1])
     days = max((values.index[-1] - values.index[0]).days, 1)
-    cagr = (final_value / total_invested) ** (365.25 / days) - 1 if total_invested else 0
+    cashflows = [(pd.Timestamp(dt), -float(amount)) for dt, amount in contributions.items() if amount]
+    cashflows.append((pd.Timestamp(prices.index[-1]), final_value))
+    money_weighted_return = xirr(cashflows)
     return {
         "ticker": ticker, "dates": [d.strftime("%Y-%m-%d") for d in values.index],
         "value": values.round(2).tolist(), "invested": invested.round(2).tolist(),
         "total_invested": round(total_invested, 2), "final_value": round(final_value, 2),
         "return_pct": round((final_value / total_invested - 1) * 100, 2) if total_invested else 0,
-        "cagr_pct": round(cagr * 100, 2), "mdd_pct": round(float(drawdown.min()) * 100, 2),
+        "cagr_pct": round(money_weighted_return * 100, 2),
+        "money_weighted_return_pct": round(money_weighted_return * 100, 2),
+        "mdd_pct": round(float(drawdown.min()) * 100, 2),
         "purchases": len(contribution_dates), "first_price_date": start.strftime("%Y-%m-%d"),
     }
 
@@ -104,6 +145,11 @@ def index():
 @app.get("/api/etfs")
 def etfs():
     return {"etfs": SUPPORTED_ETFS}
+
+
+@app.get("/api/version")
+def version():
+    return {"service": "etf-backtester", "version": app.version}
 
 
 @app.post("/api/backtest")
