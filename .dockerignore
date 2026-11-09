@@ -9,3 +9,4 @@ __pycache__
 .env
 Dockerfile
 README.md
+actions-runner

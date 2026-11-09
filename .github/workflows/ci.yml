@@ -7,8 +7,12 @@ on:
 env:
   IMAGE_NAME: randomxssmemory/etf-backtester
 
+concurrency:
+  group: etf-backtester-production
+  cancel-in-progress: false
+
 jobs:
-  docker:
+  build-and-push:
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,3 +36,56 @@ jobs:
             ${{ env.IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: [self-hosted, windows, x64]
+    permissions:
+      contents: read
+    steps:
+      - name: Deploy commit image on Windows runner
+        shell: powershell
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          CONTAINER_NAME: etf-backtester
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $IMAGE = $env:IMAGE
+          $CONTAINER_NAME = $env:CONTAINER_NAME
+          $env:DOCKERHUB_TOKEN | docker login --username $env:DOCKERHUB_USERNAME --password-stdin
+          if ($LASTEXITCODE -ne 0) { throw 'Docker Hub login failed.' }
+          docker pull $IMAGE
+          if ($LASTEXITCODE -ne 0) { throw 'Docker image pull failed.' }
+
+          $existing = docker ps -aq --filter "name=^$CONTAINER_NAME$"
+          if ($existing) {
+            docker stop $CONTAINER_NAME 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'Stopping the existing container failed.' }
+            docker rm $CONTAINER_NAME 2>$null
+            if ($LASTEXITCODE -ne 0) { throw 'Removing the existing container failed.' }
+          }
+
+          docker run -d --name $CONTAINER_NAME --restart unless-stopped -p 127.0.0.1:8000:8000 $IMAGE
+          if ($LASTEXITCODE -ne 0) { throw 'Starting the new container failed.' }
+
+          $healthy = $false
+          for ($attempt = 1; $attempt -le 30; $attempt++) {
+            try {
+              $response = Invoke-WebRequest -Uri 'http://127.0.0.1:8000/api/etfs' -UseBasicParsing -TimeoutSec 5
+              if ($response.StatusCode -eq 200) {
+                $healthy = $true
+                break
+              }
+            } catch {
+              Start-Sleep -Seconds 2
+            }
+          }
+          if (-not $healthy) {
+            docker logs $CONTAINER_NAME
+            throw 'ETF Backtester health check failed.'
+          }
+
+          Invoke-WebRequest -Uri 'http://127.0.0.1:8000/' -UseBasicParsing -TimeoutSec 10 | Out-Null
+          docker ps --filter "name=^$CONTAINER_NAME$"
