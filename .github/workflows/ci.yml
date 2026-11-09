@@ -43,19 +43,20 @@ jobs:
     permissions:
       contents: read
     steps:
+      - name: Log in to Docker Hub for deployment
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
       - name: Deploy commit image on Windows runner
         shell: powershell
         env:
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           IMAGE: ${{ env.IMAGE_NAME }}:${{ github.sha }}
           CONTAINER_NAME: etf-backtester
         run: |
           $ErrorActionPreference = 'Stop'
           $IMAGE = $env:IMAGE
           $CONTAINER_NAME = $env:CONTAINER_NAME
-          $env:DOCKERHUB_TOKEN | docker login --username $env:DOCKERHUB_USERNAME --password-stdin
-          if ($LASTEXITCODE -ne 0) { throw 'Docker Hub login failed.' }
           docker pull $IMAGE
           if ($LASTEXITCODE -ne 0) { throw 'Docker image pull failed.' }
 
