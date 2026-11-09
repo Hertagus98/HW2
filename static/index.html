@@ -1,5 +1,56 @@
 <!doctype html>
-<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>ETF Backtester</title><link rel="stylesheet" href="/static/style.css"><script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script></head>
-<body><main class="shell"><header><div><span class="eyebrow">PORTFOLIO ANALYTICS</span><h1>ETF <span>Backtester</span></h1><p>과거 조정 종가로 투자 전략을 검증해보세요.</p></div><div class="status"><i></i> LIVE DATA</div></header>
-<section class="layout"><aside class="panel"><h2>투자 조건</h2><label>ETF 선택 <small>최대 6개</small></label><div id="ticker-list" class="tickers"></div><div class="field"><label for="initial">초기 투자금 <small>KRW</small></label><input id="initial" type="number" value="10000000" min="1" step="100000"></div><div class="field"><label for="monthly">월 적립금 <small>KRW</small></label><input id="monthly" type="number" value="500000" min="0" step="10000"></div><div class="dates"><div><label for="start">시작일</label><input id="start" type="date" value="2015-01-01"></div><div><label for="end">종료일</label><input id="end" type="date"></div></div><button id="run">백테스트 실행</button><p class="hint">조정 종가와 월별 첫 거래일 기준으로 계산합니다.</p></aside>
-<section class="content"><div id="message" class="message hidden"></div><div class="chart-card"><div class="card-head"><div><h2>자산 추이</h2><p id="subtitle">조건을 입력하고 백테스트를 실행하세요.</p></div><div id="legend" class="legend"></div></div><div id="chart" class="chart"></div><button id="download-csv" class="download" disabled>CSV 다운로드</button></div><div id="metrics" class="metrics"></div><div class="note"><b>계산 방법</b><span>초기 투자금은 시작일에 투자하고 이후 매월 첫 유효 거래일에 적립합니다. Yahoo Finance의 Adj Close를 사용합니다.</span></div></section></section></main><script src="/static/app.js"></script></body></html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>ETF Backtester</title>
+  <link rel="stylesheet" href="/static/style.css?v=1.2.0">
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+</head>
+<body>
+<main class="shell">
+  <header>
+    <div><span class="eyebrow">PORTFOLIO ANALYTICS · v1.2.0</span><h1>ETF <span>Backtester</span></h1><p>투자 시점과 자산 배분을 같은 조건으로 비교하세요.</p></div>
+    <div class="status">YAHOO FINANCE</div>
+  </header>
+  <section class="layout">
+    <aside class="panel">
+      <h2>투자 조건</h2>
+      <form id="conditions">
+        <div class="dates">
+          <div><label for="start">시작일</label><input id="start" type="date" value="2000-01-01" required></div>
+          <div><label for="end">종료일</label><input id="end" type="date" required></div>
+        </div>
+        <div class="presets"><button type="button" data-start="2000-01-01">2000년부터</button><button type="button" data-start="2010-01-01">2010년부터</button><button type="button" data-start="2015-01-01">2015년부터</button></div>
+        <p class="hint">시작일을 직접 변경할 수 있습니다. 실제 데이터가 있는 날짜부터 계산합니다.</p>
+        <div class="field"><label for="initial">초기 투자금 <small>KRW · 환율 고정 가정</small></label><input id="initial" type="number" value="10000000" min="1" max="100000000" step="any" required></div>
+        <div class="field"><label for="monthly">월 적립금 <small>KRW</small></label><input id="monthly" type="number" value="500000" min="0" max="100000000" step="any" required></div>
+        <label>ETF 선택 <small>최대 6개</small></label>
+        <div id="ticker-list" class="tickers"></div>
+        <label class="check"><input id="compare-strategies" type="checkbox"> 일시금 vs 적립식 비교</label>
+        <p class="hint">일시금은 적립식의 총납입금을 공통 시작일에 전액 투자합니다.</p>
+        <label class="check"><input id="compare-weights" type="checkbox"> 포트폴리오 A / B 비중 비교</label>
+        <div id="weight-panel" class="hidden">
+          <p class="hint">초기 투자금과 매월 납입금을 지정 비중으로 매수합니다. 보유분은 리밸런싱하지 않습니다.</p>
+          <div id="weight-inputs"></div><div id="weight-totals" class="hint"></div>
+        </div>
+        <button id="run" type="submit">백테스트 실행</button>
+      </form>
+    </aside>
+    <section class="content">
+      <div id="message" role="status" class="message hidden"></div>
+      <div class="chart-card">
+        <div class="card-head"><div><h2>자산 추이</h2><p id="subtitle">기간과 ETF를 선택하고 실행하세요.</p></div><button id="scale-toggle" type="button" class="secondary" aria-pressed="false">로그 축</button></div>
+        <p id="request-summary" class="hint"></p>
+        <div id="chart" class="chart"></div>
+        <button id="download-csv" type="button" disabled>CSV 다운로드</button>
+      </div>
+      <div id="metrics" class="metrics"></div>
+      <div class="note"><b>계산 기준</b><span>Adj Close로 배당·분할을 반영하고 소수점 매수를 허용합니다. 매수는 첫 유효 거래일 종가, 이후 매월 첫 거래일 종가 기준입니다. XIRR은 납입 시점을 반영한 연환산 수익률이며, MDD는 납입금을 제거한 시간가중 수익률 기준입니다. 환율 변동·세금·거래 비용은 제외합니다.</span></div>
+      <div class="note"><b>상품 안내</b><span>GLD는 금 현물 기반, USO는 WTI 원유 선물 기반, SOXQ는 PHLX 반도체 지수 추종입니다. 레버리지 ETF는 일일 목표 배수이며 실제 ETF 조정 가격으로 계산합니다. 상장 전 가격은 합성하지 않습니다. 비교 모드에서는 모든 선택 ETF의 공통 거래 기간을 사용합니다.</span></div>
+    </section>
+  </section>
+</main>
+<script src="/static/app.js?v=1.2.0"></script>
+</body>
+</html>
