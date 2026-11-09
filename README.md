@@ -23,6 +23,32 @@ python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 - 평가액은 누적 보유 주식 수 × 조정 종가입니다. 누적 수익률은 평가액/누적 투자원금 - 1, CAGR은 실제 경과일 기준 연환산, MDD는 평가액의 고점 대비 최대 하락률입니다.
 - Yahoo Finance가 반환하는 첫 데이터가 요청 시작일보다 늦으면 그 날짜부터 계산하고 경고를 표시합니다. 상장 전 기간을 임의의 가격으로 채우지 않습니다.
 
+## Docker
+
+Docker Desktop이 실행 중인 상태에서 프로젝트 루트(`HW2-GitHub`)에서 실행합니다.
+
+```powershell
+docker build -t randomxssmemory/etf-backtester:latest .
+docker run --rm -p 127.0.0.1:8000:8000 randomxssmemory/etf-backtester:latest
+```
+
+브라우저에서 http://127.0.0.1:8000 을 열 수 있습니다. 컨테이너 안의 FastAPI는 `0.0.0.0:8000`에서 수신합니다.
+
+## GitHub Actions와 Docker Hub
+
+`main` 브랜치에 push하면 `.github/workflows/ci.yml`이 `randomxssmemory/etf-backtester` 이미지를 `latest`와 커밋 SHA 태그로 Docker Hub에 push합니다.
+
+GitHub 저장소의 **Settings → Secrets and variables → Actions**에 다음 Repository secrets를 등록합니다.
+
+- `DOCKERHUB_USERNAME`: Docker Hub 사용자명
+- `DOCKERHUB_TOKEN`: Docker Hub Access Token
+
+```powershell
+git add Dockerfile .dockerignore .github/workflows/ci.yml requirements.txt README.md
+git commit -m "Add Docker build and publish workflow"
+git push origin main
+```
+
 ## API
 
 `GET /api/etfs`는 지원 ETF를 반환하고, `POST /api/backtest`는 다음 JSON을 받습니다.
