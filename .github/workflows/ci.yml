@@ -56,8 +56,22 @@ jobs:
       - name: Start pre-deploy and post-deploy monitor
         shell: powershell
         run: |
+          $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path monitoring | Out-Null
-          Start-Process powershell -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "$pwd/scripts/monitor.ps1", '-OutputPath', "$pwd/monitoring/requests.csv", '-DurationSeconds', '40' -WindowStyle Hidden
+          $script = Join-Path $env:GITHUB_WORKSPACE 'scripts/monitor.ps1'
+          $arguments = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ('"{0}"' -f $script), '-OutputPath', 'monitoring/requests.csv', '-StopPath', 'monitoring/stop', '-DurationSeconds', '1800', '-IntervalSeconds', '1')
+          $monitor = Start-Process powershell -ArgumentList $arguments -WorkingDirectory $env:GITHUB_WORKSPACE -WindowStyle Hidden -PassThru -RedirectStandardOutput 'monitoring/stdout.log' -RedirectStandardError 'monitoring/stderr.log'
+          $monitor.Id | Set-Content 'monitoring/process.pid'
+          for ($attempt = 0; $attempt -lt 15; $attempt++) {
+            if (Test-Path 'monitoring/requests.csv') { break }
+            $monitor.Refresh()
+            if ($monitor.HasExited) {
+              Get-Content 'monitoring/stderr.log'
+              throw 'Monitor exited before recording a sample.'
+            }
+            Start-Sleep -Seconds 1
+          }
+          if (-not (Test-Path 'monitoring/requests.csv')) { throw 'Monitor did not create requests.csv.' }
       - name: Log in to Docker Hub for deployment
         uses: docker/login-action@v3
         with:
@@ -110,18 +124,33 @@ jobs:
         if: always()
         shell: powershell
         run: |
-          $log = 'monitoring/requests.csv'
-          if (Test-Path $log) {
-            $rows = Import-Csv $log
-            $total = @($rows).Count
-            $success = @($rows | Where-Object { $_.status_code -eq '200' }).Count
-            $failed = $total - $success
-            $avg = if ($total) { [math]::Round((($rows | Measure-Object -Property latency_ms -Average).Average), 2) } else { 0 }
-            @("## Deployment monitoring", "- Samples: $total", "- HTTP 200: $success", "- Failed/unavailable: $failed", "- Average latency (ms): $avg", "- Observation window: pre-deploy monitor start through 30 seconds after health check") | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path monitoring | Out-Null
+          New-Item -ItemType File -Force -Path 'monitoring/stop' | Out-Null
+          if (Test-Path 'monitoring/process.pid') {
+            $monitorProcessId = [int](Get-Content 'monitoring/process.pid')
+            Wait-Process -Id $monitorProcessId -Timeout 10 -ErrorAction SilentlyContinue
           }
+          $log = 'monitoring/requests.csv'
+          '## Deployment monitoring' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          if (-not (Test-Path $log)) {
+            'Monitoring failed to produce requests.csv. See monitoring stderr artifact.' | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+            throw 'Monitoring results are missing.'
+          }
+          $rows = @(Import-Csv $log)
+          $total = $rows.Count
+          if ($total -eq 0) { throw 'Monitoring CSV contains no samples.' }
+          $success = @($rows | Where-Object { $_.status_code -eq '200' }).Count
+          $failed = $total - $success
+          $latencies = @($rows | ForEach-Object { [double]::Parse($_.latency_ms, [cultureinfo]::InvariantCulture) })
+          $avg = [math]::Round(($latencies | Measure-Object -Average).Average, 2)
+          $versions = ($rows.service_version | Where-Object { $_ } | Select-Object -Unique) -join ', '
+          $observation = if ($failed -gt 0) { 'Failed requests were observed during this deployment.' } else { 'No failed requests observed in sampled requests. Gaps between samples are not verified.' }
+          @("- Service: http://127.0.0.1:8000", "- Commit: $env:GITHUB_SHA", "- Samples: $total", "- HTTP 200: $success", "- Failed/unavailable: $failed", "- Average latency (ms): $avg", "- Observed versions: $versions", "- First sample (UTC): $($rows[0].timestamp_utc)", "- Last sample (UTC): $($rows[-1].timestamp_utc)", "- Observation: $observation", "- Window: before deployment through at least 30 seconds after a successful health check.") | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
       - name: Upload monitoring artifact
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: etf-backtester-monitor-${{ github.sha }}
-          path: monitoring/requests.csv
+          path: monitoring/
+          if-no-files-found: error
